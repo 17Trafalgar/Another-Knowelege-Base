@@ -89,6 +89,7 @@ export class ArticleService {
   ): Promise<ArticleResponseSchema> {
     const article = await this.articleRepository.findOne({
       where: { id },
+      relations: ['tags'],
     });
 
     if (!article) {
@@ -102,37 +103,39 @@ export class ArticleService {
     try {
       const tags: TagEntity[] = [];
 
-      await Promise.all(
-        dto.tags.map(async (tag) => {
-          const oldTag = await this.tagRepository.findOne({
-            where: { title: tag },
+      if (dto.tags && dto.tags.length > 0) {
+        for (const tagTitle of dto.tags) {
+          let tag = await this.tagRepository.findOne({
+            where: { title: tagTitle },
           });
-
-          if (!oldTag) {
-            const newTag = await this.tagRepository.save({
-              title: tag,
-            });
-
-            tags.push(newTag);
+          if (!tag) {
+            tag = this.tagRepository.create({ title: tagTitle });
+            await queryRunner.manager.save(tag);
           }
-        }),
-      );
+          tags.push(tag);
+        }
+      }
 
-      await this.articleRepository.update(id, {
-        tags: tags,
-      });
+      const { tags: _, ...articleData } = dto;
+      await queryRunner.manager.update(ArticleEntity, id, articleData);
+
+      await queryRunner.manager
+        .createQueryBuilder()
+        .relation(ArticleEntity, 'tags')
+        .of(id)
+        .addAndRemove(tags, article.tags);
 
       await queryRunner.commitTransaction();
 
       const updatedArticle = await this.articleRepository.findOne({
         where: { id },
-        relations: { tags: true, user: true },
+        relations: ['tags', 'user'],
       });
 
       return transformToArticleSchema(updatedArticle!);
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      console.log(error);
+      console.error(error);
       throw new BadRequestException('Не удалось обновить статью', error);
     } finally {
       await queryRunner.release();
